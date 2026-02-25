@@ -14,16 +14,6 @@ st.set_page_config(page_title="Qwen Streaming Chat", layout="wide")
 st.markdown(
     """
     <style>
-        .main-title {
-            font-size: 2rem;
-            font-weight: 700;
-            margin-bottom: 0.2rem;
-            letter-spacing: -0.01em;
-        }
-        .sub-title {
-            color: #94a3b8;
-            margin-bottom: 1rem;
-        }
         .chat-tip {
             border: 1px dashed rgba(148, 163, 184, 0.45);
             border-radius: 10px;
@@ -109,8 +99,6 @@ current_chat = st.session_state.chats[st.session_state.active_chat_id]
 if not client:
     st.warning("DASHSCOPE_API_KEY belum diatur. Set API key di environment agar chat bisa digunakan.")
 
-chat_count = len(st.session_state.chat_order)
-message_count = len(current_chat["messages"])
 
 # --- Sidebar ---
 with st.sidebar:
@@ -146,17 +134,6 @@ with st.sidebar:
 
 current_chat = st.session_state.chats[st.session_state.active_chat_id]
 
-title_col, stat_col_1, stat_col_2 = st.columns([5, 1.5, 1.5])
-with title_col:
-    st.markdown('<div class="main-title">Qwen Streaming Chat</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="sub-title">Percakapan cepat dengan multi-chat history dan respons streaming.</div>',
-        unsafe_allow_html=True,
-    )
-with stat_col_1:
-    st.metric("Chats", chat_count)
-with stat_col_2:
-    st.metric("Messages", message_count)
 
 if not current_chat["messages"]:
     st.markdown(
