@@ -11,6 +11,24 @@ load_dotenv()
 # --- Page setup (wide, no title) ---
 st.set_page_config(page_title="Qwen Streaming Chat", layout="wide")
 
+st.markdown(
+    """
+    <style>
+        .chat-tip {
+            border: 1px dashed rgba(148, 163, 184, 0.45);
+            border-radius: 10px;
+            padding: 0.8rem 1rem;
+            margin: 0.5rem 0 1rem 0;
+            color: #cbd5e1;
+        }
+        .stSidebar .stButton button {
+            border-radius: 10px;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # --- Fixed rules (only what you asked) ---
 CHUNK_SIZE_TOKENS = 8192
 OVERLAP_TOKENS = 200
@@ -21,6 +39,8 @@ DEFAULT_MODEL = "qwen3.5-plus"
 @st.cache_resource
 def get_client():
     api_key = os.getenv("DASHSCOPE_API_KEY")
+    if not api_key:
+        return None
     return OpenAI(
         api_key=api_key,
         base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -76,9 +96,13 @@ if "chats" not in st.session_state:
 
 current_chat = st.session_state.chats[st.session_state.active_chat_id]
 
+if not client:
+    st.warning("DASHSCOPE_API_KEY belum diatur. Set API key di environment agar chat bisa digunakan.")
+
+
 # --- Sidebar ---
 with st.sidebar:
-    st.subheader("Chats")
+    st.subheader("💬 Chats")
 
     if st.button("+ New chat", use_container_width=True):
         new_chat_id = str(uuid.uuid4())
@@ -99,6 +123,7 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
+    st.caption("⚙️ Session settings")
     st.caption(f"Model: `{DEFAULT_MODEL}` (locked)")
     enable_thinking = st.toggle("Enable thinking", value=True)
 
@@ -109,6 +134,13 @@ with st.sidebar:
 
 current_chat = st.session_state.chats[st.session_state.active_chat_id]
 
+
+if not current_chat["messages"]:
+    st.markdown(
+        '<div class="chat-tip">Mulai percakapan dengan menulis pertanyaan di bawah. Untuk teks panjang, app akan otomatis memecahnya menjadi beberapa chunk token.</div>',
+        unsafe_allow_html=True,
+    )
+
 # --- Render history ---
 for message in current_chat["messages"]:
     with st.chat_message(message["role"]):
@@ -118,6 +150,10 @@ for message in current_chat["messages"]:
 user_text = st.chat_input("Tulis pertanyaan...")
 
 if user_text:
+    if not client:
+        st.error("Chat tidak dapat diproses karena API key belum tersedia.")
+        st.stop()
+
     # Only split if user_text > 8192 tokens; otherwise keep as one message.
     if count_tokens(user_text) > CHUNK_SIZE_TOKENS:
         chunks = split_with_overlap_8192_200(user_text)
