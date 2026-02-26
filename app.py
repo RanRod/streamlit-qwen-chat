@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import sqlite3
 import uuid
 import streamlit as st
@@ -112,6 +113,19 @@ def build_extra_body(provider_name: str, enable_thinking: bool) -> dict:
     if provider_name == "DashScope (Qwen)":
         return {"enable_thinking": enable_thinking}
     return {"thinking": {"type": "enabled" if enable_thinking else "disabled"}}
+
+
+def strip_thinking_blocks(text: str) -> tuple[str, str]:
+    """
+    Pisahkan blok <think>...</think> dari konten jawaban utama.
+    Return: (jawaban_bersih, thinking_dari_tag)
+    """
+    if not text:
+        return "", ""
+
+    think_blocks = re.findall(r"<think>(.*?)</think>", text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    return cleaned_text.strip(), "\n\n".join(block.strip() for block in think_blocks if block.strip())
 
 
 def create_chat(title: str = "New chat") -> dict:
@@ -422,6 +436,8 @@ if user_text:
 
         thinking_text = ""
         answer_text = ""
+        raw_answer_text = ""
+        tag_thinking_text = ""
 
         provider_name = st.session_state.get("provider_name", DEFAULT_PROVIDER)
         model_name = st.session_state.get(
@@ -447,7 +463,13 @@ if user_text:
                 thinking_box.markdown(thinking_text)
 
             if content:
-                answer_text += content
+                raw_answer_text += content
+                answer_text, tag_thinking_text = strip_thinking_blocks(raw_answer_text)
+                rendered_thinking = "\n\n".join(
+                    [part for part in [thinking_text.strip(), tag_thinking_text.strip()] if part]
+                )
+                if rendered_thinking:
+                    thinking_box.markdown(rendered_thinking)
                 answer_box.markdown(answer_text)
 
         assistant_count_before_append = len(
