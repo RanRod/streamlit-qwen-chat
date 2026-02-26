@@ -1,9 +1,13 @@
 import os
+import json
+import sqlite3
 import uuid
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 import tiktoken
+from datetime import datetime
+from pathlib import Path
 
 # --- Load .env ---
 load_dotenv()
@@ -34,6 +38,8 @@ CHUNK_SIZE_TOKENS = 8192
 OVERLAP_TOKENS = 200
 TIKTOKEN_ENCODING = "cl100k_base"
 DEFAULT_MODEL = "qwen3.5-plus"
+DB_PATH = "chat_history.db"
+DATA_DIR = Path("./data")
 
 
 @st.cache_resource
@@ -85,14 +91,167 @@ def get_chat_title(messages: list[dict]) -> str:
     return "New chat"
 
 
+def get_db_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db() -> None:
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chats (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                seq INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(chat_id) REFERENCES chats(id)
+            )
+            """
+        )
+        conn.commit()
+
+
+def load_chats_from_db() -> tuple[dict, list]:
+    chats: dict[str, dict] = {}
+    chat_order: list[str] = []
+
+    with get_db_connection() as conn:
+        chat_rows = conn.execute(
+            "SELECT id, title FROM chats ORDER BY updated_at DESC"
+        ).fetchall()
+
+        for row in chat_rows:
+            chat_id = row["id"]
+            chat_order.append(chat_id)
+            message_rows = conn.execute(
+                "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY seq ASC",
+                (chat_id,),
+            ).fetchall()
+            chats[chat_id] = {
+                "title": row["title"],
+                "messages": [
+                    {"role": message["role"], "content": message["content"]}
+                    for message in message_rows
+                ],
+            }
+
+    return chats, chat_order
+
+
+def save_chat_to_db(chat_id: str, chat: dict) -> None:
+    now = datetime.utcnow().isoformat()
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO chats (id, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                updated_at = excluded.updated_at
+            """,
+            (chat_id, chat["title"], now, now),
+        )
+        conn.execute("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+        for idx, message in enumerate(chat["messages"], start=1):
+            conn.execute(
+                """
+                INSERT INTO messages (chat_id, role, content, seq, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (chat_id, message["role"], message["content"], idx, now),
+            )
+        conn.commit()
+
+
+def generate_title_from_first_ai_response(client: OpenAI, response_text: str) -> str:
+    prompt = (
+        "Buat judul singkat (maksimal 6 kata) untuk percakapan berdasarkan respons AI berikut. "
+        "Balas hanya judul tanpa tanda kutip:\n\n"
+        f"{response_text}"
+    )
+    try:
+        completion = client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            extra_body={"enable_thinking": False},
+        )
+        title = completion.choices[0].message.content.strip()
+        return title[:80] if title else "New chat"
+    except Exception:
+        fallback = response_text.strip().split("\n")[0]
+        return fallback[:40] + ("..." if len(fallback) > 40 else "") if fallback else "New chat"
+
+
+def parse_data_file(file_path: Path) -> dict:
+    suffix = file_path.suffix.lower()
+    content = file_path.read_text(encoding="utf-8")
+
+    if suffix == ".json":
+        parsed = json.loads(content)
+    elif suffix in {".txt", ".csv"}:
+        parsed = content
+    else:
+        parsed = content
+
+    return {
+        "name": file_path.name,
+        "type": suffix,
+        "raw": content,
+        "parsed": parsed,
+    }
+
+
+def append_data_to_chat(chat: dict, data_items: list[dict]) -> None:
+    if not data_items:
+        return
+
+    combined = []
+    for item in data_items:
+        combined.append(f"### File: {item['name']}\n{item['raw']}")
+
+    chat["messages"].append(
+        {
+            "role": "system",
+            "content": "Gunakan data berikut sebagai konteks:\n\n" + "\n\n".join(combined),
+        }
+    )
+
+
+init_db()
+
+
 client = get_client()
 
 # --- Session state ---
 if "chats" not in st.session_state:
-    first_chat_id = str(uuid.uuid4())
-    st.session_state.chats = {first_chat_id: create_chat("New chat")}
-    st.session_state.chat_order = [first_chat_id]
-    st.session_state.active_chat_id = first_chat_id
+    loaded_chats, loaded_order = load_chats_from_db()
+    if loaded_chats:
+        st.session_state.chats = loaded_chats
+        st.session_state.chat_order = loaded_order
+        st.session_state.active_chat_id = loaded_order[0]
+    else:
+        first_chat_id = str(uuid.uuid4())
+        st.session_state.chats = {first_chat_id: create_chat("New chat")}
+        st.session_state.chat_order = [first_chat_id]
+        st.session_state.active_chat_id = first_chat_id
+        save_chat_to_db(first_chat_id, st.session_state.chats[first_chat_id])
+
+if "loaded_data" not in st.session_state:
+    st.session_state.loaded_data = []
 
 current_chat = st.session_state.chats[st.session_state.active_chat_id]
 
@@ -109,7 +268,22 @@ with st.sidebar:
         st.session_state.chats[new_chat_id] = create_chat("New chat")
         st.session_state.chat_order.insert(0, new_chat_id)
         st.session_state.active_chat_id = new_chat_id
+        save_chat_to_db(new_chat_id, st.session_state.chats[new_chat_id])
         st.rerun()
+
+    if st.button("Ambil data", use_container_width=True):
+        if not DATA_DIR.exists() or not DATA_DIR.is_dir():
+            st.warning("Folder ./data tidak ditemukan.")
+        else:
+            data_files = [
+                p for p in sorted(DATA_DIR.iterdir()) if p.suffix.lower() in {".json", ".csv", ".txt"}
+            ]
+            processed_items = [parse_data_file(file_path) for file_path in data_files]
+            st.session_state.loaded_data = processed_items
+            append_data_to_chat(current_chat, processed_items)
+            save_chat_to_db(st.session_state.active_chat_id, current_chat)
+            st.success(f"{len(processed_items)} file data berhasil diproses ke session state.")
+            st.rerun()
 
     for chat_id in st.session_state.chat_order:
         chat = st.session_state.chats[chat_id]
@@ -130,6 +304,7 @@ with st.sidebar:
     if st.button("Clear current chat", use_container_width=True):
         st.session_state.chats[st.session_state.active_chat_id]["messages"] = []
         st.session_state.chats[st.session_state.active_chat_id]["title"] = "New chat"
+        save_chat_to_db(st.session_state.active_chat_id, st.session_state.chats[st.session_state.active_chat_id])
         st.rerun()
 
 current_chat = st.session_state.chats[st.session_state.active_chat_id]
@@ -166,7 +341,7 @@ if user_text:
         with st.chat_message("user"):
             st.markdown(user_text)
 
-    current_chat["title"] = get_chat_title(current_chat["messages"])
+    save_chat_to_db(st.session_state.active_chat_id, current_chat)
 
     # --- Assistant streaming ---
     with st.chat_message("assistant"):
@@ -197,4 +372,11 @@ if user_text:
                 answer_text += content
                 answer_box.markdown(answer_text)
 
+        assistant_count_before_append = len(
+            [message for message in current_chat["messages"] if message["role"] == "assistant"]
+        )
         current_chat["messages"].append({"role": "assistant", "content": answer_text})
+        if assistant_count_before_append == 0:
+            current_chat["title"] = generate_title_from_first_ai_response(client, answer_text)
+
+        save_chat_to_db(st.session_state.active_chat_id, current_chat)
