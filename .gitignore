@@ -2,3 +2,17 @@
 .venv/
 venv/
 env/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.sqlite-journal
+*.wal
+*.shm
+
+# If you use local DB folder
+db/
+database/
+data/
