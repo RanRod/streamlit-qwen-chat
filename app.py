@@ -261,9 +261,10 @@ if not client:
 
 # --- Sidebar ---
 with st.sidebar:
-    st.subheader("💬 Chats")
+    st.title("💬 Qwen Chat")
 
-    if st.button("+ New chat", use_container_width=True):
+    st.subheader("⚙️ Settings")
+    if st.button("+ New chat", use_container_width=True, help="Buat sesi chat baru"):
         new_chat_id = str(uuid.uuid4())
         st.session_state.chats[new_chat_id] = create_chat("New chat")
         st.session_state.chat_order.insert(0, new_chat_id)
@@ -271,7 +272,7 @@ with st.sidebar:
         save_chat_to_db(new_chat_id, st.session_state.chats[new_chat_id])
         st.rerun()
 
-    if st.button("Ambil data", use_container_width=True):
+    if st.button("📥 Ambil data", use_container_width=True, help="Muat file .json/.csv/.txt dari folder ./data"):
         if not DATA_DIR.exists() or not DATA_DIR.is_dir():
             st.warning("Folder ./data tidak ditemukan.")
         else:
@@ -285,29 +286,26 @@ with st.sidebar:
             st.success(f"{len(processed_items)} file data berhasil diproses ke session state.")
             st.rerun()
 
+    enable_thinking = st.toggle("Enable thinking", value=True)
+    st.caption(f"Model: `{DEFAULT_MODEL}` (locked)")
+
+    st.divider()
+    st.subheader("🗂️ List session chat")
+    st.caption(f"Total sesi: {len(st.session_state.chat_order)}")
+
     for chat_id in st.session_state.chat_order:
         chat = st.session_state.chats[chat_id]
+        chat_title = chat["title"] if len(chat["title"]) <= 32 else f"{chat['title'][:32]}..."
+        chat_label = f"🟢 {chat_title}" if chat_id == st.session_state.active_chat_id else chat_title
         if st.button(
-            chat["title"],
+            chat_label,
             key=f"chat_{chat_id}",
             use_container_width=True,
             type="primary" if chat_id == st.session_state.active_chat_id else "secondary",
+            help=f"{len(chat['messages'])} pesan",
         ):
             st.session_state.active_chat_id = chat_id
             st.rerun()
-
-    st.divider()
-    st.caption("⚙️ Session settings")
-    st.caption(f"Model: `{DEFAULT_MODEL}` (locked)")
-    enable_thinking = st.toggle("Enable thinking", value=True)
-
-    if st.button("Clear current chat", use_container_width=True):
-        st.session_state.chats[st.session_state.active_chat_id]["messages"] = []
-        st.session_state.chats[st.session_state.active_chat_id]["title"] = "New chat"
-        save_chat_to_db(st.session_state.active_chat_id, st.session_state.chats[st.session_state.active_chat_id])
-        st.rerun()
-
-current_chat = st.session_state.chats[st.session_state.active_chat_id]
 
 
 if not current_chat["messages"]:
