@@ -13,7 +13,7 @@ from pathlib import Path
 load_dotenv()
 
 # --- Page setup (wide, no title) ---
-st.set_page_config(page_title="Qwen Streaming Chat", layout="wide")
+st.set_page_config(page_title="DeepSeek Streaming Chat", layout="wide")
 
 st.markdown(
     """
@@ -37,19 +37,23 @@ st.markdown(
 CHUNK_SIZE_TOKENS = 8192
 OVERLAP_TOKENS = 200
 TIKTOKEN_ENCODING = "cl100k_base"
-DEFAULT_MODEL = "qwen3.5-plus"
+DEFAULT_MODEL = "deepseek-chat"
 DB_PATH = "chat_history.db"
 DATA_DIR = Path("./data")
 
 
 @st.cache_resource
 def get_client():
-    api_key = os.getenv("DASHSCOPE_API_KEY")
+    # DashScope (Qwen) config sementara dinonaktifkan:
+    # api_key = os.getenv("DASHSCOPE_API_KEY")
+    # base_url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
+    api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key:
         return None
     return OpenAI(
         api_key=api_key,
-        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        base_url="https://api.deepseek.com",
     )
 
 
@@ -256,12 +260,12 @@ if "loaded_data" not in st.session_state:
 current_chat = st.session_state.chats[st.session_state.active_chat_id]
 
 if not client:
-    st.warning("DASHSCOPE_API_KEY belum diatur. Set API key di environment agar chat bisa digunakan.")
+    st.warning("DEEPSEEK_API_KEY belum diatur. Set API key di environment agar chat bisa digunakan.")
 
 
 # --- Sidebar ---
 with st.sidebar:
-    st.title("💬 Qwen Chat")
+    st.title("💬 DeepSeek Chat")
 
     st.subheader("⚙️ Settings")
     if st.button("+ New chat", use_container_width=True, help="Buat sesi chat baru"):
