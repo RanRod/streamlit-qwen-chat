@@ -6,14 +6,14 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 import tiktoken
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 # --- Load .env ---
 load_dotenv()
 
 # --- Page setup (wide, no title) ---
-st.set_page_config(page_title="Qwen Streaming Chat", layout="wide")
+st.set_page_config(page_title="Chat AI", layout="wide")
 
 st.markdown(
     """
@@ -33,23 +33,48 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- Fixed rules (only what you asked) ---
+# --- Fixed rules ---
 CHUNK_SIZE_TOKENS = 8192
 OVERLAP_TOKENS = 200
 TIKTOKEN_ENCODING = "cl100k_base"
-DEFAULT_MODEL = "qwen3.5-plus"
+
 DB_PATH = "chat_history.db"
 DATA_DIR = Path("./data")
 
+# --- Provider & model options ---
+PROVIDERS = {
+    "DeepSeek": {
+        "env_key": "DEEPSEEK_API_KEY",
+        "base_url": "https://api.deepseek.com",
+        "models": ["deepseek-chat"],
+    },
+    "DashScope (Qwen)": {
+        "env_key": "DASHSCOPE_API_KEY",
+        "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        "models": ["qwen3.5-plus"],
+    },
+}
+
+DEFAULT_PROVIDER = "DeepSeek"
+DEFAULT_MODEL_BY_PROVIDER = {
+    "DeepSeek": "deepseek-chat",
+    "DashScope (Qwen)": "qwen3.5-plus",
+}
+
 
 @st.cache_resource
-def get_client():
-    api_key = os.getenv("DASHSCOPE_API_KEY")
+def get_client(provider_name: str):
+    provider = PROVIDERS.get(provider_name)
+    if not provider:
+        return None
+
+    api_key = os.getenv(provider["env_key"])
     if not api_key:
         return None
+
     return OpenAI(
         api_key=api_key,
-        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        base_url=provider["base_url"],
     )
 
 
@@ -77,6 +102,16 @@ def split_with_overlap_8192_200(text: str) -> list[str]:
         if end == len(toks):
             break
     return chunks
+
+
+def build_extra_body(provider_name: str, enable_thinking: bool) -> dict:
+    """
+    DashScope/Qwen: extra_body={"enable_thinking": True/False}
+    DeepSeek: extra_body={"thinking": {"type": "enabled"/"disabled"}}
+    """
+    if provider_name == "DashScope (Qwen)":
+        return {"enable_thinking": enable_thinking}
+    return {"thinking": {"type": "enabled" if enable_thinking else "disabled"}}
 
 
 def create_chat(title: str = "New chat") -> dict:
@@ -153,7 +188,7 @@ def load_chats_from_db() -> tuple[dict, list]:
 
 
 def save_chat_to_db(chat_id: str, chat: dict) -> None:
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(UTC).isoformat()
     with get_db_connection() as conn:
         conn.execute(
             """
@@ -177,7 +212,12 @@ def save_chat_to_db(chat_id: str, chat: dict) -> None:
         conn.commit()
 
 
-def generate_title_from_first_ai_response(client: OpenAI, response_text: str) -> str:
+def generate_title_from_first_ai_response(
+    client: OpenAI,
+    provider_name: str,
+    model_name: str,
+    response_text: str,
+) -> str:
     prompt = (
         "Buat judul singkat (maksimal 6 kata) untuk percakapan berdasarkan respons AI berikut. "
         "Balas hanya judul tanpa tanda kutip:\n\n"
@@ -185,9 +225,9 @@ def generate_title_from_first_ai_response(client: OpenAI, response_text: str) ->
     )
     try:
         completion = client.chat.completions.create(
-            model=DEFAULT_MODEL,
+            model=model_name,
             messages=[{"role": "user", "content": prompt}],
-            extra_body={"enable_thinking": False},
+            extra_body=build_extra_body(provider_name, False),
         )
         title = completion.choices[0].message.content.strip()
         return title[:80] if title else "New chat"
@@ -219,24 +259,24 @@ def append_data_to_chat(chat: dict, data_items: list[dict]) -> None:
     if not data_items:
         return
 
-    combined = []
     for item in data_items:
-        combined.append(f"### File: {item['name']}\n{item['raw']}")
-
-    chat["messages"].append(
-        {
-            "role": "system",
-            "content": "Gunakan data berikut sebagai konteks:\n\n" + "\n\n".join(combined),
-        }
-    )
+        chat["messages"].append(
+            {
+                "role": "user",
+                "content": f"Data dari file {item['name']}:\n{item['raw']}",
+            }
+        )
 
 
+# --- Init DB ---
 init_db()
 
+# --- Session state init ---
+if "provider_name" not in st.session_state:
+    st.session_state.provider_name = DEFAULT_PROVIDER
+if "model_name" not in st.session_state:
+    st.session_state.model_name = DEFAULT_MODEL_BY_PROVIDER[st.session_state.provider_name]
 
-client = get_client()
-
-# --- Session state ---
 if "chats" not in st.session_state:
     loaded_chats, loaded_order = load_chats_from_db()
     if loaded_chats:
@@ -255,15 +295,36 @@ if "loaded_data" not in st.session_state:
 
 current_chat = st.session_state.chats[st.session_state.active_chat_id]
 
-if not client:
-    st.warning("DASHSCOPE_API_KEY belum diatur. Set API key di environment agar chat bisa digunakan.")
-
-
 # --- Sidebar ---
 with st.sidebar:
-    st.title("💬 Qwen Chat")
-
     st.subheader("⚙️ Settings")
+
+    # Provider selector
+    provider_name = st.selectbox(
+        "Provider",
+        options=list(PROVIDERS.keys()),
+        index=list(PROVIDERS.keys()).index(st.session_state.provider_name)
+        if st.session_state.provider_name in PROVIDERS
+        else 0,
+    )
+
+    # If provider changes, reset model to provider default
+    if provider_name != st.session_state.provider_name:
+        st.session_state.provider_name = provider_name
+        st.session_state.model_name = DEFAULT_MODEL_BY_PROVIDER[provider_name]
+        st.rerun()
+
+    # Model selector (depends on provider)
+    model_options = PROVIDERS[provider_name]["models"]
+    model_name = st.selectbox(
+        "Model",
+        options=model_options,
+        index=model_options.index(st.session_state.model_name)
+        if st.session_state.model_name in model_options
+        else 0,
+    )
+    st.session_state.model_name = model_name
+
     if st.button("+ New chat", use_container_width=True, help="Buat sesi chat baru"):
         new_chat_id = str(uuid.uuid4())
         st.session_state.chats[new_chat_id] = create_chat("New chat")
@@ -272,12 +333,18 @@ with st.sidebar:
         save_chat_to_db(new_chat_id, st.session_state.chats[new_chat_id])
         st.rerun()
 
-    if st.button("📥 Ambil data", use_container_width=True, help="Muat file .json/.csv/.txt dari folder ./data"):
+    if st.button(
+        "📥 Ambil data",
+        use_container_width=True,
+        help="Muat file .json/.csv/.txt dari folder ./data",
+    ):
         if not DATA_DIR.exists() or not DATA_DIR.is_dir():
             st.warning("Folder ./data tidak ditemukan.")
         else:
             data_files = [
-                p for p in sorted(DATA_DIR.iterdir()) if p.suffix.lower() in {".json", ".csv", ".txt"}
+                p
+                for p in sorted(DATA_DIR.iterdir())
+                if p.suffix.lower() in {".json", ".csv", ".txt"}
             ]
             processed_items = [parse_data_file(file_path) for file_path in data_files]
             st.session_state.loaded_data = processed_items
@@ -287,7 +354,9 @@ with st.sidebar:
             st.rerun()
 
     enable_thinking = st.toggle("Enable thinking", value=True)
-    st.caption(f"Model: `{DEFAULT_MODEL}` (locked)")
+
+    st.caption(f"Provider: `{provider_name}`")
+    st.caption(f"Model aktif: `{model_name}`")
 
     st.divider()
     st.subheader("🗂️ List session chat")
@@ -307,6 +376,8 @@ with st.sidebar:
             st.session_state.active_chat_id = chat_id
             st.rerun()
 
+# --- Client follows provider selection ---
+client = get_client(st.session_state.provider_name)
 
 if not current_chat["messages"]:
     st.markdown(
@@ -324,7 +395,9 @@ user_text = st.chat_input("Tulis pertanyaan...")
 
 if user_text:
     if not client:
-        st.error("Chat tidak dapat diproses karena API key belum tersedia.")
+        provider_name = st.session_state.get("provider_name", DEFAULT_PROVIDER)
+        needed_key = PROVIDERS[provider_name]["env_key"]
+        st.error(f"Chat tidak dapat diproses karena API key `{needed_key}` belum tersedia.")
         st.stop()
 
     # Only split if user_text > 8192 tokens; otherwise keep as one message.
@@ -350,16 +423,23 @@ if user_text:
         thinking_text = ""
         answer_text = ""
 
+        provider_name = st.session_state.get("provider_name", DEFAULT_PROVIDER)
+        model_name = st.session_state.get(
+            "model_name", DEFAULT_MODEL_BY_PROVIDER.get(provider_name, "deepseek-chat")
+        )
+
         completion = client.chat.completions.create(
-            model=DEFAULT_MODEL,
+            model=model_name,
             messages=current_chat["messages"],
-            extra_body={"enable_thinking": enable_thinking},
+            extra_body=build_extra_body(provider_name, enable_thinking),
             stream=True,
         )
 
         for chunk in completion:
             delta = chunk.choices[0].delta
-            reasoning = getattr(delta, "reasoning_content", None)
+
+            # More robust: provider may use different naming
+            reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             content = getattr(delta, "content", None)
 
             if reasoning:
@@ -374,7 +454,11 @@ if user_text:
             [message for message in current_chat["messages"] if message["role"] == "assistant"]
         )
         current_chat["messages"].append({"role": "assistant", "content": answer_text})
+
+        # Title only from first assistant message in this chat
         if assistant_count_before_append == 0:
-            current_chat["title"] = generate_title_from_first_ai_response(client, answer_text)
+            current_chat["title"] = generate_title_from_first_ai_response(
+                client, provider_name, model_name, answer_text
+            )
 
         save_chat_to_db(st.session_state.active_chat_id, current_chat)
