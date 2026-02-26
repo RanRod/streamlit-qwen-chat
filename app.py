@@ -6,7 +6,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 import tiktoken
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 # --- Load .env ---
@@ -153,7 +153,7 @@ def load_chats_from_db() -> tuple[dict, list]:
 
 
 def save_chat_to_db(chat_id: str, chat: dict) -> None:
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(UTC).isoformat()
     with get_db_connection() as conn:
         conn.execute(
             """
@@ -219,16 +219,13 @@ def append_data_to_chat(chat: dict, data_items: list[dict]) -> None:
     if not data_items:
         return
 
-    combined = []
     for item in data_items:
-        combined.append(f"### File: {item['name']}\n{item['raw']}")
-
-    chat["messages"].append(
-        {
-            "role": "system",
-            "content": "Gunakan data berikut sebagai konteks:\n\n" + "\n\n".join(combined),
-        }
-    )
+        chat["messages"].append(
+            {
+                "role": "user",
+                "content": f"Data dari file {item['name']}:\n{item['raw']}",
+            }
+        )
 
 
 init_db()
