@@ -261,7 +261,8 @@ with st.sidebar:
         "deepseek-chat",
         "qwen/qwen3.5-plus-02-15",
         "qwen/qwen3.5-flash-02-23",
-        "google/gemini-3-flash-preview"
+        "google/gemini-3-flash-preview",
+        "x-ai/grok-4.1-fast",
     ]
     selected_model = st.selectbox("Select Model:", model_options)
     
